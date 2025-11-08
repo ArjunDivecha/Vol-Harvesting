@@ -1,0 +1,232 @@
+Below is a Product Requirements Document (PRD) to implement the volatility ETN strategy described in “The Volatility Edge — A Dual Approach For VIX ETNs Trading.” It is written for a code‑generation assistant (“Codex”) to produce production‑quality Python that backtests and automates the strategy. Where the paper specifies exact rules, I cite the relevant page/table/figure so engineers know what is “non‑negotiable.”
+PRD — Volatility Edge (VIX ETN) Strategy
+Owner: You
+Doc version: 1.0
+Target stack: Python 3.11+, poetry/uv or pipenv, pandas/pyarrow, numpy, IBKR API (ib‑insync), pydantic for config, matplotlib for plots, pytest + hypothesis for tests.
+Environments: local dev, paper-trading (IBKR), live (IBKR).
+Sources of truth: Strategy rules in Table 2 (p. 22) and execution approach in Section 6 (pp. 26–31). Performance targets in Table 3 and Figure 4 are reference only for sanity checks.
+1) Goals & Non‑Goals
+Goals
+Reproduce the four strategies exactly as defined in the paper (“Passive”, “eVRP”, “eVRP + BoC”, “eVRP + BoC + Sizing”) with configurable parameters (costs, thresholds, instruments). Rules summarized in Table 2 (p. 22).
+Backtesting engine that:
+Uses daily bars plus intraday (minute) data for SPY to compute the 10‑day realized‑vol forecast at the specified signal time (default 15:45 ET; minute-bar fallback as described below). See Section 3 (pp. 15–17) and Section 4.2 (pp. 17–19).
+Applies 5 bps per trade and ±2% rebalance threshold, as used in tests (pp. 16–17, 21–22).
+Provides the metrics table akin to Table 3 (p. 25) and equity curves as in Figure 4 (p. 25) and blending analysis as in Figure 5 (p. 26).
+Live/paper trader via IBKR with Market‑On‑Close (MOC) order flow and early‑close handling (Section 6 and footnote on early closes, p. 31).
+Robustness: clear logging, risk guards, parameterization, and replayable audit trail.
+Non‑Goals
+Futures/variance swap trading. We trade ETFs/ETNs only (the paper’s live section is IBKR + ETNs; background on futures/variance swaps is informational).
+Exact historical replication of VXX/XIV index proxies used in the paper’s research dataset; instead we provide pluggable data adapters and reference mappings to current 30‑day VIX ETN/ETF proxies (see Instruments). The paper used index proxies to avoid ETN dislocations (p. 16).
+2) What “Codex” Can vs. Cannot Do (constraints baked into tasks)
+Can reasonably do
+Generate Python modules, docstrings, tests, CLI, config schemas; write adapters for data providers (CSV/parquet/IBKR), implement scheduling, logging, plotting, and IBKR order submission scaffolding; create reproducible environments (Dockerfile / uv / poetry), continuous tests (pytest), and typed APIs.
+Cannot do (and we design around this)
+Obtain commercial market data (Bloomberg/Norgate/IQFeed) or set up paid feeds.
+Hold credentials / click GUIs / accept broker agreements; a human must configure IBKR TWS/Gateway and API permissions.
+Guarantee exchange‑level MOC acceptance for every instrument (some ETFs/exchanges differ); we include fall‑back execution rules.
+Run unattended in your environment; we provide a CLI + cron/systemd guidance and health checks you can wire up.
+3) Strategy Logic (authoritative spec)
+The strategy family escalates from a static short‑vol sleeve to a dual‑signal, dynamically sized approach (see Section 4, pp. 16–22; Table 2, p. 22).
+Signals & Inputs
+eRV30 (expected 30‑day realized vol): compute from the standard deviation of last 10 daily SPY returns, annualized:
+eRV30 = std_10d * sqrt(252) * 100 (eq. 5 on p. 18).
+The latest daily return is from prior close → “signal time” price of SPY (Section 4.2, p. 18). Default signal time is 15:45:00 ET. If only minute bars are available, use the minute that begins at 15:44:00 and ends at 15:45:00 (as in Section 6’s pipeline figure and footnote 17 on p. 27–28), or else the last tick at/just before 15:45. Make the signal time configurable.
+VIX(t) and VIX3M(t) at signal time (Section 4.3, p. 19). Term-structure state:
+Contango: VIX < VIX3M
+Backwardation: VIX > VIX3M (same section).
+eVRP(t) = VIX(t) – eRV30(t) (Section 4.2).
+Positioning rules (mirror Table 2, p. 22)
+Passive: +20% VIXSHORT, rebalance only if drift beyond ±2%.
+eVRP:
+If eVRP > 0: +20% VIXSHORT
+Else: 0% (cash)
+Rebalance threshold ±2%.
+eVRP + BoC:
+If eVRP > 0 and VIX < VIX3M: +20% VIXSHORT
+Else if eVRP ≤ 0 and VIX < VIX3M: +10% VIXSHORT
+Else if eVRP ≤ 0 and VIX > VIX3M: +20% VIXLONG
+Else: 0%
+Rebalance threshold ±2%.
+eVRP + BoC + Sizing (dynamic sizing; Section 4.4, p. 20):
+If eVRP > 0 and VIX < VIX3M: VIX% in VIXSHORT (i.e., VIX/100 of portfolio notional)
+Else if eVRP < 0 and VIX < VIX3M: 0.5 × VIX% in VIXSHORT
+Else if eVRP < 0 and VIX > VIX3M: VIX% in VIXLONG
+Else: 0%
+Rebalance threshold ±2%. Include configurable caps (e.g., max_vol_exposure_pct) for prudence; the paper notes risk asymmetry and the rationale for size scaling (pp. 20–21).
+Rationale and outcomes referenced in Table 3 (performance summary) and Figure 4 & 5 (equity curves and SPY blend). These are for verification ranges only.
+4) Instruments & Mapping
+Abstract exposures in code:
+VIXLONG: 1× long 30‑day VIX futures exposure (paper uses index SPVXSTR proxy; p. 16–17).
+VIXSHORT: inverse 30‑day exposure (paper’s inverse index proxy; p. 16–17).
+Live default ETFs/ETNs (configurable):
+VIXLONG: VIXY (ProShares) or VXX (Barclays).
+VIXSHORT: SVIX (−1×) or SVXY (−0.5×).
+Creation halt/ETN dislocation guard: paper mentions VXX creation halt in Mar‑2022 and premium vs NAV (p. 16–17). Implement a NAV premium check hook (optional) and a “dislocation kill‑switch” to route to an alternative instrument or cash.
+5) Data Requirements & Adapters
+What the system needs
+Daily SPY close history.
+Minute SPY bars for the last 1–2 weeks (to compute eRV at signal time).
+Intraday snapshots (at signal time) of VIX and VIX3M.
+OHLCV for chosen ETNs/ETFs for backtests and live orders.
+Adapters (Codex must implement interfaces)
+IDataSource with implementations:
+CsvParquetSource (local files, schema documented below).
+IBKRSource (historical & live via ib‑insync; VIX/VIX3M symbols configurable).
+Holiday/early close calendar: use pandas‑market‑calendars (US equities) and expose earlyCloseShift (paper: move signal to 12:45 ET and execute at 13:00 ET; p. 31).
+Schema (local CSV/parquet)
+spy_daily: date, close
+spy_minute: datetime (tz‑aware ET), open, high, low, close, volume
+vix_intraday: datetime, last
+vix3m_intraday: datetime, last
+etf_daily per instrument: date, open, high, low, close, adj_close, volume
+6) Backtesting Engine (deterministic, no look‑ahead)
+Key behaviors
+Evaluate signals at signal time using only information up to that time (no peeking).
+Submit MOC fills at that day’s official close; if backtest data lacks official auction prints, fill at daily close + optional slippage bp.
+Apply ±2% rebalance threshold (paper, pp. 16–17, 21–22).
+Cost model: per‑trade 5 bps (paper, p. 16 and Table 2 notes).
+Position rounding: round to nearest share; track cash; reject orders if insufficient cash.
+Support strategy modes: passive | evrp | evrp_boc | evrp_boc_sizing.
+Reports:
+Metrics: TotRet, CAGR, Vol, Sharpe (rf=0 by default), Sortino, MDD, adjusted MDD (rolling median method described on p. 24), Alpha/Beta vs SPX, Correlation, turnover and trades/yr (as in Table 3).
+Plots: equity line vs SPY (Figure 4), SPY‑blend Sharpe sweep (Figure 5).
+Year‑by‑year table like Appendix B (p. 35).
+Blended portfolio tool
+Combine SPY buy‑and‑hold with the vol sleeve; weights 0–100% step 5%, monthly EOM rebalance, report Sharpe/MDD (Figure 5, p. 26).
+7) Live/Paper Trading (IBKR)
+Runtime flow (mirrors Section 6, pp. 26–31; see diagrams on pp. 27–30):
+At startup: connect to TWS/Gateway; verify account, timezone, and API permissions.
+Daily schedule:
+t = signal_time (default 15:45 ET; early close 12:45 ET):
+Pull SPY minute data to compute eRV30.
+Pull VIX and VIX3M snapshot.
+Generate signal & target weights per Table 2 (p. 22).
+Rebalance logic: only place orders if the absolute difference between current and target allocation ≥ 2%.
+Sizing: compute shares from account equity × target_weight (cap with config).
+t_close − buffer: submit MOC orders; if instrument/exchange rejects MOC, use fallback: Marketable order at close − 15s with Good‑After‑Time protection.
+Post‑trade: reconcile executions; write end‑of‑day snapshot (positions, cash, signals, orders, fills).
+Safety rails
+Max exposure cap (max_vol_exposure_pct, default e.g., 40%).
+Kill‑switches: dislocation (NAV premium), missing data (no VIX3M), IBKR disconnection, halted instrument.
+Early‑close override (p. 31): shift signal/execution earlier.
+8) Configuration (pydantic schema)
+mode: evrp_boc_sizing   # passive|evrp|evrp_boc|evrp_boc_sizing
+signal_time_et: "15:45:00"
+early_close_signal_time_et: "12:45:00"
+close_time_et: "16:00:00"
+early_close_time_et: "13:00:00"
+rebalance_threshold_pct: 0.02
+per_trade_cost_bps: 5
+slippage_bps_close: 0
+max_vol_exposure_pct: 0.40   # safety cap
+size_rule_divisor: 100       # “VIX%”: VIX/100; can set 200 for conservative, 75 for aggressive
+size_rule_half_when_contango_and_neg_evrp: true
+instruments:
+  long_vol:  {symbol: "VIXY", exchange: "ARCA", currency: "USD"}
+  short_vol: {symbol: "SVIX", exchange: "CBOE", currency: "USD"}
+data:
+  provider: "ibkr"  # "csv"|"ibkr"
+  csv_paths: {...}
+  ibkr:
+    host: "127.0.0.1"
+    port: 7497
+    client_id: 5
+    vix_symbol: "VIX"
+    vix3m_symbol: "VIX3M"
+risk:
+  nav_dislocation_check: false
+  dislocation_max_premium_pct: 3
+logging:
+  level: INFO
+9) Modules & Responsibilities
+vol_edge/
+├─ __init__.py
+├─ config.py            # pydantic models; load/validate YAML
+├─ data/
+│  ├─ base.py           # IDataSource, DataFrame contracts (tz-aware)
+│  ├─ csv_source.py     # local CSV/parquet implementation
+│  └─ ibkr_source.py    # ib-insync wrapper (hist + snapshot)
+├─ signals/
+│  ├─ realized_vol.py   # eRV30 @ signal time (std10d from close-to-signal)
+│  └─ term_structure.py # VIX vs VIX3M, deadband/ties handling
+├─ strategies/
+│  ├─ base.py           # interface: target_weight(port_state, signals)
+│  ├─ passive.py
+│  ├─ evrp.py
+│  ├─ evrp_boc.py
+│  └─ evrp_boc_sizing.py
+├─ portfolio/
+│  ├─ position.py       # holdings, cash, valuation
+│  ├─ sizing.py         # weight→shares; caps; rounding
+│  └─ rebalance.py      # threshold logic, order list
+├─ exec/
+│  ├─ backtest.py       # event loop, fills (MOC), costs, slippage
+│  ├─ ib_broker.py      # place MOC / fallback; reconcile
+│  └─ schedule.py       # calendars, early close
+├─ reports/
+│  ├─ metrics.py        # Table-3-like stats (Sharpe, Sortino, MDD, adj MDD)
+│  ├─ blending.py       # SPY+strategy sweep (Figure 5)
+│  └─ plots.py          # equity curves (Figure 4), drawdowns
+├─ cli.py               # entrypoints: backtest|paper|live|blend|report
+└─ tests/               # unit + property tests; fixtures
+Adj. MDD must implement the rolling 20‑day median NAV method (definition on p. 24) and report both classic and adjusted MDD.
+10) Execution Details & Edge Cases
+Term-structure ties: if abs(VIX - VIX3M) < ε (config, default 0.1 vol‑points), treat as contango to avoid noisy flip‑flops; the paper does not specify ε—make it optional and default off to remain faithful.
+Instrument availability: if VIXLONG or VIXSHORT is unavailable or halted, go cash; log a WARN and persist the reason.
+Exposure math with −0.5× products: if the configured short instrument is −0.5× (e.g., SVXY), size in notional exposure terms so the target “index‑equivalent exposure” meets rules; or let users provide a multiplier in the instrument config.
+Corporate actions / splits: rely on adjusted close for backtests; mark unadjusted execution prices in logs.
+Early closes & holidays: use calendar to shift signal/execution (12:45/13:00 ET, p. 31).
+11) Outputs & Observability
+Daily audit file (parquet/jsonl) with: timestamp, signal inputs (eRV30, VIX, VIX3M), regime, target weights, current weights, orders, fills, PnL, exposure, and flags (early close, fallback execution).
+Console & rotating logs with INFO baseline, DEBUG on demand.
+Reports: HTML/PNG/PDF export of metrics and plots; CSV of monthly and annual returns (match Appendix B layout).
+12) Testing & Acceptance
+Unit tests (≥85% coverage) for:
+eRV30 calculation at arbitrary signal times and early‑close shifts.
+Strategy decision tables (parametrized cases mirroring Table 2).
+Rebalance thresholding, cost application, adjusted MDD math.
+Property tests: no look‑ahead (signals only use data ≤ signal time).
+Backtest reproducibility: fixed seed → identical results.
+Acceptance: On sample datasets (provided locally), the rank‑ordering of Sharpe and the magnitude range of CAGR/Sharpe should broadly align with Table 3 (tolerances documented in README because instruments and fees differ).
+13) Security, Compliance, & Risk Notes
+Not investment advice. Volatility ETPs can experience sharp losses (e.g., “Volmageddon” and product terminations referenced in the paper’s background and Section 2/15, with XIV’s collapse on Feb‑5‑2018). Provide conspicuous warnings in CLI banners and README.
+Paper cautions about ETN dislocations (e.g., VXX March‑2022 creation halt/premium). Include a manual override and sanity checks.
+14) Deliverables (what Codex should generate)
+Codebase implementing modules above, with:
+README.md explaining installation, data setup (CSV vs IBKR), running backtests, paper‑trading, and live.
+Examples:
+examples/backtest_evpr_boc_sizing.yml (config)
+Notebook examples/Walkthrough.ipynb: run a backtest, inspect signals, produce Figure‑4/5‑like plots, and export Table‑3‑like metrics.
+CLI commands:
+vol-edge backtest --config path.yml
+vol-edge blend --config path.yml --weights 0:100:5
+vol-edge paper --config path.yml
+vol-edge live --config path.yml
+vol-edge report --run-id <id>
+Test suite with fixtures for minute/daily SPY data and synthetic VIX/VIX3M tracks.
+Dockerfile (or uv/poetry lock) for reproducible runs.
+15) Open Questions resolved as configurable knobs
+Exact signal timestamp: Paper says compute at 3:45 pm ET (Section 4.2, p. 18); Section 6’s minute‑bar example references the 15:44–15:45 bar (p. 27–28). We implement signal_time_et with default 15:45:00, and if minute bars are used we take the close of the 15:44 bar, matching the figure.
+Deadband for VIX vs VIX3M: Optional term_structure_epsilon (default 0.0 to match paper) to reduce churn.
+16) Rationale & Provenance (for reviewers)
+Strategy definitions and rebalancing/cost assumptions: Section 4 and Table 2 (p. 22).
+Performance summary and plots to emulate: Table 3 and Figure 4–5 (p. 25–26).
+Automation workflow design (IBKR, signal timing, position sizing, rebalancing threshold): Section 6 and diagrams on pp. 27–31. Early close shift 12:45/13:00 ET (p. 31).
+Data proxies and the need to avoid ETN dislocations in backtests: Section 3 (pp. 15–17).
+Appendix A — Data Dictionary (concise)
+SignalSnapshot:
+ts_et, evrp, erv30, vix, vix3m, term_structure_state (“contango”/“backwardation”), regime (short‑HC, short‑MC, long, cash).
+PortfolioState:
+equity, cash, positions[{symbol, shares, mkt_price}], weights.
+Order:
+symbol, side, shares, type (“MOC”/fallback), good_after_time, submitted_ts.
+Fill:
+order_id, fill_price, fill_ts, fees_bps.
+Appendix B — Risk Controls (default suggestions)
+max_vol_exposure_pct = 0.40
+min_trade_value_usd = 1000 (avoid dust)
+nav_dislocation_check=false (enable if a NAV feed is available)
+term_structure_epsilon = 0.10 (optional)
+One‑page TL;DR for Codex
+Implement four modes exactly as in Table 2 with ±2% rebalance, 5 bps costs. Signals at 15:45 ET (minute-bar close at 15:44 when using 1‑min data). VIXLONG = 1× product (e.g., VIXY), VIXSHORT = inverse product (e.g., SVIX). Live uses MOC with early‑close shift. Produce metrics like Table 3, equity plot like Figure 4, blending plot like Figure 5. Include safety caps and logging.
+If you want, I can next produce a starter repository layout and concrete function signatures (docstrings + type hints) aligned to this PRD so you can point Codex at each file and have it fill in the implementations.
