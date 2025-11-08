@@ -6,10 +6,13 @@ This README distills the requirements from `PRD.txt` and the white paper *“The
 
 ## 1. Scope & Objectives
 
-- **Parity with paper signals** – replicate the decision tables in Table&nbsp;2 (p.22) including ±2 % rebalance bands and 5 bps per trade.
-- **Signal timing** – compute eRV30 using 10 daily SPY returns with the latest price sampled at 15:45 ET (shift to 15:44–15:45 minute bar when only 1‑min data exist; Sec. 4.2 & Sec. 6, pp.18 & 27–28).
-- **Execution realism** – ingest daily/minute data, simulate Market‑On‑Close (MOC) fills, handle early closes (13:00 ET execution; p.31), and expose the same flow to IBKR paper/live trading.
-- **Transparency** – produce Table‑3‑style metrics, Figure‑4/5 plots, blending analysis, daily audit logs, and reproducible configs.
+- **Parity with paper signals** – replicate the decision tables in Table&nbsp;2 (p.22) including ±2 % rebalance bands with a base-case assumption of zero explicit trading costs (5 bps remains a configurable override to match the paper when needed).
+- **Signal timing (spec deviation)** – compute eRV30 from the latest 10 daily close-to-close SPY returns and form the entire signal snapshot (SPY, VIX, VIX3M) using the prior day’s close. Target weights derived at *t‑1* are implemented via Market‑On‑Close at *t*, creating a documented one-session lag relative to the paper’s 15:45 ET signal.
+- **Execution realism** – under the daily-data regime, assume fills occur at the official close (or adjusted close) and treat limit-on-close fallbacks as no-ops because only closing prices are modeled. Early-close nuances are noted but not simulated until intraday data returns.
+- **Transparency** – produce Table‑3‑style metrics, Figure‑4/5 plots, blending analysis, daily audit logs, and reproducible configs, with clear callouts where the daily-only approximation diverges from the original spec.
+- **Primary data** – start with Yahoo Finance (`yfinance`) daily OHLCV for SPY, VIX (`^VIX`), VIX3M (`^VIX3M`), UVXY, and SVIX; keep the data layer pluggable so the eventual live-trading stack (with intraday inputs) can be implemented separately without refactoring the backtest.
+- **Default instruments** – adopt the most active VIX ETNs (UVXY for long exposure, SVIX for short exposure) per Yahoo Finance volumes observed on 2025‑11‑08 09:56 PT.
+- **Backtest vs. live split** – the historical backtest will always operate on daily closes; intraday data is reserved for future live/paper trading modules and treated as a separate concern.
 
 Out of scope per PRD: VIX futures, swaps, or replicating proprietary ETN proxies—only ETF/ETN wrappers with configurable multipliers (e.g., SVIX, UVXY, VIXY).
 
@@ -20,10 +23,11 @@ Out of scope per PRD: VIX futures, swaps, or replicating proprietary ETN proxies
 1. **Environment & Tooling**
    - Python 3.11+, `uv`/`poetry` (lockfile), `pytest` + `hypothesis`, `pandas`, `pyarrow`, `numpy`, `matplotlib`, `ib-insync`, `pydantic`.
    - Bootstrap repo with linting (`ruff`/`black` optional) and pre-commit if desired.
+   - Target runtime is a single Apple Silicon (M4 Max) macOS host; document any architecture-specific steps (e.g., IBKR gateway install paths).
 2. **Data Layer (`vol_edge/data/`)**
-   - Contracts in `base.py` for time‑zone‑aware frames.
-   - CSV/Parquet loader (`csv_source.py`) plus IBKR adapter (`ibkr_source.py`) for historical + intraday pulls.
-   - Ensure SPY minute data resolution supports 15:45 ET sampling; provide fallback logic for missing bars.
+   - Contracts in `base.py` for schema/units (dates in ET, adjusted vs raw closes).
+   - `yfinance_source.py` (daily OHLCV pulls for SPY, VIX, VIX3M, UVXY, SVIX) as the initial implementation; keep CSV/Parquet ingestion for offline fixtures and leave hooks for future IBKR/intraday adapters.
+   - Rolling-window helpers to ensure the prior-close snapshot is available before emitting signals (enforce 10-day warm-up).
 3. **Signal Engines (`vol_edge/signals/`)**
    - `realized_vol.py`: eRV30 per eq.(5), annualized, with calendar adjustments and early‑close shifts.
    - `term_structure.py`: VIX vs. VIX3M comparison with optional epsilon deadband (default 0, per PRD §15).
@@ -31,12 +35,12 @@ Out of scope per PRD: VIX futures, swaps, or replicating proprietary ETN proxies
    - Base interface + four concrete implementations mirroring Table 2.
    - Configurable safety caps (`max_vol_exposure_pct`) and instrument multipliers for inverse/leveraged ETNs.
 5. **Portfolio & Execution (`vol_edge/portfolio/`, `vol_edge/exec/`)**
-   - Position tracking, notional→shares sizing, ±2 % rebalance logic, cost model (5 bps), and MOC simulator.
-   - IBKR wrapper (`ib_broker.py`) that submits MOC, handles rejects, and escalates to fallback (limit-on-close or VWAP slice) when needed (Sec. 6, p.29).
-   - Scheduling utilities for regular/early closes and holiday awareness.
+   - Position tracking, notional→shares sizing, ±2 % rebalance logic, zero-cost default (configurable), and a close-to-close fill model (MOC assumed to fill at that day’s close).
+   - Execution module focuses on backtests only for now; IBKR live/paper wrappers remain TODO until we reinstate intraday feeds.
+   - Basic calendar utilities for trading-day iteration; early-close shifts are noted but not simulated until we have intraday data.
 6. **Reporting & CLI (`vol_edge/reports/`, `cli.py`)**
    - Metrics per Table 3 (CAGR, vol, Sharpe, Sortino, MDD, adj. MDD per rolling 20-day median definition on p.24).
-   - Blending sweep (Figure 5), equity/drawdown plots (Figure 4), CSV exports of monthly/annual returns (Appendix B).
+   - Blending sweep (Figure 5) using the 0 → 100 % SPY weights in 5 % increments, equity/drawdown plots (Figure 4), CSV exports of monthly/annual returns (Appendix B).
    - CLI: `vol-edge backtest|blend|paper|live|report`.
 7. **Examples & Docs**
    - `examples/backtest_evrp_boc_sizing.yml` config template.
@@ -59,16 +63,22 @@ Each phase should follow TDD: author failing unit/property tests before implemen
 |  | `eVRP < 0 ∧ VIX < VIX3M` | `VIXSHORT` | `0.5 × VIX%` | Reduce risk in low-VIX fragility regimes. |
 |  | `eVRP < 0 ∧ VIX > VIX3M` | `VIXLONG` | `VIX%` | Offense in backwardation. |
 
-Signal order: compute eRV30 first (needs SPY data), fetch VIX/VIX3M snapshots at the signal timestamp, derive term-structure state, then evaluate the rule tree. All strategies honor ±2 % rebalance bands and 5 bps execution cost.
+Signal order: compute eRV30 first (needs SPY data), fetch VIX/VIX3M snapshots at the signal timestamp, derive term-structure state, then evaluate the rule tree. All strategies honor ±2 % rebalance bands and assume zero explicit execution cost unless a config override is supplied.
 
 ---
 
-## 4. Data, Calendars, & Signal Timing
+## 4. Instrument Defaults & Market Data
 
-- **SPY daily closes** (for last 10 returns) and intraday prices to capture the 15:45 ET snapshot. If 15:45 is absent, use the last print prior to that time (Sec. 4.2, p.18). Early closes shift to 12:45 ET signal / 13:00 ET MOC (p.31).
-- **VIX & VIX3M snapshots** from the same timestamp; allow adapters for CSV, Polygon, IBKR, etc., but normalize to a shared schema.
+*Spec deviation notice:* Until we have intraday feeds, every signal uses the **prior trading day’s close**, so decisions react one full session later than Table 2 assumes. All reports must highlight this lag so stakeholders don’t overfit to Table 3.
+
+- **Default ETFs/ETNs** – A quick Yahoo Finance (`yfinance`) pull on 2025‑11‑08 09:56 PT showed `UVXY` trading ~53 M shares that day (10‑day avg ~37.5 M) vs. `UVIX` at ~47 M (avg ~31 M), while inverse products `SVIX` and `SVXY` printed ~9 M (avg ~3.9 M) and ~3.3 M (avg ~2.0 M) respectively. We therefore fix `UVXY` as `VIXLONG` and `SVIX` as `VIXSHORT` in configs, with multipliers reflecting their leverage ( +1.5× for UVXY, −1× for SVIX) and leave the others as alternates/fallbacks.
+- **Backtest horizon** – Run historical tests across the full Jan‑2008 → latest‑available window to remain consistent with the paper while capturing post‑2025 behavior once data is available.
+- **SPY daily closes** provide both the last 10 returns for eRV30 and the prior-close snapshot for signal formation; no intraday sampling is attempted in this first phase, and we rely on Yahoo’s adjusted close to incorporate splits/distributions.
+- **VIX & VIX3M closes** (from `^VIX` / `^VIX3M`) are aligned to the same prior-close timestamp. Document that this introduces a ~15-minute timing difference vs. the paper’s 15:45 ET observation.
 - **Trading calendars** for NYSE + CBOE to align holidays/half days and to prevent signals on closed sessions.
-- **Instrument metadata** – YAML config with tickers, multipliers (e.g., `-1` for SVIX, `+1` for VIXY), borrow availability flags, and fallback tickers.
+- **Instrument metadata** – YAML config with tickers, multipliers (e.g., `-1` for SVIX, `+1` for UVXY’s effective leverage), borrow availability flags, and fallback tickers.
+- **Test fixtures** – Prefer sanitized IBKR exports for deterministic unit/integration tests once you share them; until then we will fabricate synthetic datasets clearly labeled as such.
+- **Calendars** – Yahoo Finance trading days are sufficient; no separate NYSE/CBOE calendar will be wired in for the backtest unless data anomalies appear.
 
 ---
 
@@ -78,7 +88,7 @@ Signal order: compute eRV30 first (needs SPY data), fetch VIX/VIX3M snapshots at
 
 - `data.csv_paths` & `data.ibkr` credentials.
 - `instruments.vix_short` / `vix_long` definitions with multipliers and fee assumptions.
-- `signals.signal_time_et`, `term_structure_epsilon`, `max_vol_exposure_pct`, `rebalance_threshold_pct`, `trade_cost_bps`.
+- `signals.signal_time_et`, `term_structure_epsilon`, `max_vol_exposure_pct`, `rebalance_threshold_pct`, `trade_cost_bps` (default 0; set to 5 to match the paper).
 - `risk` toggles (NAV dislocation checks, min trade value, etc.).
 - `logging` level and audit sink.
 
@@ -127,24 +137,11 @@ Follow the prescribed workflow: write tests first, get approval, then implement.
 
 ---
 
-## 9. Open Questions for You
+## 9. Decisions Locked In
 
-To avoid assumptions, please clarify:
-
-1. **Data sourcing** – Which concrete providers (Polygon, Tiingo, IBKR historical, CSV dumps) will we use for SPY minute data and VIX/VIX3M snapshots? Any licensing constraints?
-2. **Historical window** – Should backtests start Jan‑2008 as in the paper, or do you want a different start/stop range?
-3. **Instrument mapping** – Which ETNs/ETFs should we treat as `VIXSHORT` and `VIXLONG` in both backtests and live trading (e.g., `SVIX`/`UVIX`, `SVXY`/`VIXY`)? Are there brokerage availability constraints?
-4. **Position caps** – Is the default `max_vol_exposure_pct = 40%` acceptable, or do you prefer a different ceiling per strategy?
-5. **Execution venue** – Are we strictly using IBKR MOC orders, or do you need support for smart-routing/ISLAND close orders or alternative brokers?
-6. **Fallback behavior** – When MOC is rejected or the instrument is halted, should we auto-switch to limit-on-close, next-day MOO, or simply flatten to cash?
-7. **Cost model** – Do we always apply 5 bps round-trip per Table 2, or should costs be parameterized by instrument/liquidity tiers?
-8. **Blending analysis** – Which SPY blend weights (beyond the 0→100 % in 5 % steps from Figure 5) matter most for your reporting?
-9. **Deployment** – Will live trading run on a single machine (cron/systemd) or do we need container/orchestrator hooks (Docker, ECS, etc.)?
-10. **Compliance logging** – Do you require additional artifacts (e.g., signed order blotters, broker confirms) for audit/regulatory workflows?
-11. **Extensibility** – Should we reserve hooks for alternative realized-vol estimators (HAR, GARCH) now, or defer until baseline parity is achieved?
-12. **User interface** – Beyond CLI/notebook, do you envision a lightweight dashboard or alerts channel (Slack/Email) for fills and risk events?
-
-Once these points are resolved, we can draft the first ExecPlan and start the TDD implementation safely.
+- Use Yahoo Finance adjusted closes for SPY, UVXY, SVIX (raw closes optional but not required now).
+- Daily backtest is permanent; intraday data will come later solely for live/paper trading flows.
+- Yahoo’s trading calendar is sufficient for determining valid sessions.
 
 ---
 
