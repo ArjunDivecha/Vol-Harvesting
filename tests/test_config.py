@@ -82,3 +82,24 @@ def test_ibkr_provider_uses_defaults():
 
     assert config.data.provider is DataProvider.IBKR
     assert config.data.ibkr.host == "127.0.0.1"
+
+
+def test_execution_config_defaults():
+    config = load_config(
+        {
+            "instruments": {
+                "long_vol": {"symbol": "UVXY"},
+                "short_vol": {"symbol": "SVXY"},
+            },
+            "backtest": {"start_date": "2020-01-01"},
+            "execution": {
+                "moc_deadline_minutes_before_close": 10,
+            },
+        }
+    )
+
+    exec_cfg = config.execution
+    assert exec_cfg.moc_deadline_minutes_before_close == 10
+    assert exec_cfg.fallback_loc_offset_bps == 5
+    assert exec_cfg.max_retries == 2
+    assert exec_cfg.account_id is None

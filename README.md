@@ -90,6 +90,7 @@ Signal order: compute eRV30 first (needs SPY data), fetch VIX/VIX3M snapshots at
 - `data.csv_paths` & `data.ibkr` credentials.
 - `instruments.vix_short` / `vix_long` definitions with multipliers and fee assumptions.
 - `signals.signal_time_et`, `term_structure_epsilon`, `max_vol_exposure_pct`, `rebalance_threshold_pct`, `trade_cost_bps` (default 0; set to 5 to match the paper).
+- `execution` block for live trading: `moc_deadline_minutes_before_close` (default 10), `fallback_loc_offset_bps` (default 5 bps off last trade), `max_retries`, and `flatten_on_fail` toggle.
 - `risk` toggles (NAV dislocation checks, min trade value, etc.).
 - `logging` level and audit sink.
 

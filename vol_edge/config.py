@@ -106,6 +106,14 @@ class LoggingConfig(BaseModel):
     level: str = "INFO"
 
 
+class ExecutionConfig(BaseModel):
+    moc_deadline_minutes_before_close: int = Field(10, ge=0)
+    fallback_loc_offset_bps: float = Field(5.0, ge=0.0)
+    max_retries: int = Field(2, ge=0)
+    flatten_on_fail: bool = False
+    account_id: Optional[str] = None
+
+
 class AppConfig(BaseModel):
     instruments: InstrumentsConfig
     data: DataConfig = Field(default_factory=DataConfig)
@@ -113,6 +121,7 @@ class AppConfig(BaseModel):
     backtest: BacktestConfig
     risk: RiskConfig = Field(default_factory=RiskConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
+    execution: ExecutionConfig = Field(default_factory=ExecutionConfig)
 
 
 def load_config(source: Union[str, Path, Dict[str, Any]]) -> AppConfig:
@@ -138,6 +147,7 @@ __all__ = [
     "InstrumentConfig",
     "InstrumentsConfig",
     "LoggingConfig",
+    "ExecutionConfig",
     "RiskConfig",
     "StrategyConfig",
     "StrategyName",
