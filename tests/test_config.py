@@ -5,7 +5,7 @@ from textwrap import dedent
 import pytest
 from pydantic import ValidationError
 
-from vol_edge.config import StrategyName, load_config
+from vol_edge.config import DataProvider, StrategyName, load_config
 
 
 def write_config(tmp_path: Path, text: str) -> Path:
@@ -64,3 +64,21 @@ def test_csv_provider_requires_all_paths(tmp_path):
 
     with pytest.raises(ValidationError):
         load_config(config_path)
+
+
+def test_ibkr_provider_uses_defaults():
+    config = load_config(
+        {
+            "instruments": {
+                "long_vol": {"symbol": "UVXY"},
+                "short_vol": {"symbol": "SVIX"},
+            },
+            "data": {
+                "provider": "ibkr",
+            },
+            "backtest": {"start_date": "2020-01-01", "end_date": "2020-02-01"},
+        }
+    )
+
+    assert config.data.provider is DataProvider.IBKR
+    assert config.data.ibkr.host == "127.0.0.1"

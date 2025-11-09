@@ -7,10 +7,10 @@ This README distills the requirements from `PRD.txt` and the white paper *“The
 ## 1. Scope & Objectives
 
 - **Parity with paper signals** – replicate the decision tables in Table&nbsp;2 (p.22) including ±2 % rebalance bands with a base-case assumption of zero explicit trading costs (5 bps remains a configurable override to match the paper when needed).
-- **Signal timing (spec deviation)** – compute eRV30 from the latest 10 daily close-to-close SPY returns and form the entire signal snapshot (SPY, VIX, VIX3M) using the prior day’s close. Target weights derived at *t‑1* are implemented via Market‑On‑Close at *t*, creating a documented one-session lag relative to the paper’s 15:45 ET signal.
+- **Signal timing (spec deviation)** – compute eRV30 from the latest 10 daily close-to-close SPY returns and form the entire signal snapshot (SPY, VIX, VIX3M) using the **same day’s** close, then execute MOC orders at that same close. This assumes we can observe the close print before submitting a close order—an approximation noted as a limitation until intraday data is available.
 - **Execution realism** – under the daily-data regime, assume fills occur at the official close (or adjusted close) and treat limit-on-close fallbacks as no-ops because only closing prices are modeled. Early-close nuances are noted but not simulated until intraday data returns.
 - **Transparency** – produce Table‑3‑style metrics, Figure‑4/5 plots, blending analysis, daily audit logs, and reproducible configs, with clear callouts where the daily-only approximation diverges from the original spec.
-- **Primary data** – start with Yahoo Finance (`yfinance`) daily OHLCV for SPY, VIX (`^VIX`), VIX3M (`^VIX3M`), UVXY, and SVIX; keep the data layer pluggable so the eventual live-trading stack (with intraday inputs) can be implemented separately without refactoring the backtest.
+- **Primary data** – start with Yahoo Finance (`yfinance`) daily OHLCV for SPY, VIX (`^VIX`), VIX3M (`^VIX3M`), UVXY, and SVXY. The data layer also exposes an `ibkr` provider (config at `data.ibkr`) that fetches 1‑minute bars and caches them under `data/ibkr_cache/*_1min.parquet` so we don’t redownload between runs. When IBKR refuses VIX3M minute history, we automatically fall back to Yahoo’s prior-close data for that symbol only.
 - **Default instruments** – adopt the most active VIX ETNs (UVXY for long exposure, SVIX for short exposure) per Yahoo Finance volumes observed on 2025‑11‑08 09:56 PT.
 - **Backtest vs. live split** – the historical backtest will always operate on daily closes; intraday data is reserved for future live/paper trading modules and treated as a separate concern.
 
@@ -69,13 +69,14 @@ Signal order: compute eRV30 first (needs SPY data), fetch VIX/VIX3M snapshots at
 
 ## 4. Instrument Defaults & Market Data
 
-*Spec deviation notice:* Until we have intraday feeds, every signal uses the **prior trading day’s close**, so decisions react one full session later than Table 2 assumes. All reports must highlight this lag so stakeholders don’t overfit to Table 3.
+*Spec deviation notice:* With only daily bars we assume the closing prints are observable before submitting the same-session MOC orders—an optimistic approximation that removes the prior one-day lag but introduces implicit look-ahead. Additionally, VIX3M currently falls back to the official close from Yahoo Finance because IBKR minute history for that index is unavailable on this account; future intraday implementations should replace this proxy once the data feed is permitted.
 
 - **Default ETFs/ETNs** – A quick Yahoo Finance (`yfinance`) pull on 2025‑11‑08 09:56 PT showed `UVXY` trading ~53 M shares that day (10‑day avg ~37.5 M) vs. `UVIX` at ~47 M (avg ~31 M), while inverse products `SVIX` and `SVXY` printed ~9 M (avg ~3.9 M) and ~3.3 M (avg ~2.0 M) respectively. We therefore fix `UVXY` as `VIXLONG` and `SVIX` as `VIXSHORT` in configs, with multipliers reflecting their leverage ( +1.5× for UVXY, −1× for SVIX) and leave the others as alternates/fallbacks.
 - **Backtest horizon** – Run historical tests across the full Jan‑2008 → latest‑available window to remain consistent with the paper while capturing post‑2025 behavior once data is available.
 - **SPY daily closes** provide both the last 10 returns for eRV30 and the prior-close snapshot for signal formation; no intraday sampling is attempted in this first phase, and we rely on Yahoo’s adjusted close to incorporate splits/distributions.
 - **VIX & VIX3M closes** (from `^VIX` / `^VIX3M`) are aligned to the same prior-close timestamp. Document that this introduces a ~15-minute timing difference vs. the paper’s 15:45 ET observation.
 - **Trading calendars** for NYSE + CBOE to align holidays/half days and to prevent signals on closed sessions.
+- **IBKR connectivity** – setting `data.provider: ibkr` activates the new connection wrapper (defaults to localhost:7496). Minute-bar downloading is the next milestone; for now, the provider ensures credentials/settings load correctly.
 - **Instrument metadata** – YAML config with tickers, multipliers (e.g., `-1` for SVIX, `+1` for UVXY’s effective leverage), borrow availability flags, and fallback tickers.
 - **Test fixtures** – Prefer sanitized IBKR exports for deterministic unit/integration tests once you share them; until then we will fabricate synthetic datasets clearly labeled as such.
 - **Calendars** – Yahoo Finance trading days are sufficient; no separate NYSE/CBOE calendar will be wired in for the backtest unless data anomalies appear.

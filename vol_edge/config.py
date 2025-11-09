@@ -47,17 +47,28 @@ class CsvPaths(BaseModel):
 class DataProvider(str, Enum):
     YFINANCE = "yfinance"
     CSV = "csv"
+    IBKR = "ibkr"
+
+
+class IBKRConnectionConfig(BaseModel):
+    host: str = "127.0.0.1"
+    port: int = 7496
+    client_id: int = 7
+    connect_timeout: float = 10.0
 
 
 class DataConfig(BaseModel):
     provider: DataProvider = DataProvider.YFINANCE
     yfinance: YFinanceConfig = Field(default_factory=YFinanceConfig)
     csv: Optional[CsvPaths] = None
+    ibkr: IBKRConnectionConfig = Field(default_factory=IBKRConnectionConfig)
 
     @model_validator(mode="after")
     def _validate_payload(self) -> "DataConfig":
         if self.provider == DataProvider.CSV and self.csv is None:
             raise ValueError("csv provider requires csv paths")
+        if self.provider == DataProvider.IBKR and not self.ibkr:
+            raise ValueError("ibkr provider requires ibkr configuration")
         return self
 
 
@@ -123,6 +134,7 @@ __all__ = [
     "BacktestConfig",
     "DataConfig",
     "DataProvider",
+    "IBKRConnectionConfig",
     "InstrumentConfig",
     "InstrumentsConfig",
     "LoggingConfig",

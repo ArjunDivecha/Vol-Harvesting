@@ -109,4 +109,5 @@ def _normalize_from_multiindex(df: pd.DataFrame, symbol: str) -> pd.DataFrame:
 def get_data_source(config: AppConfig) -> DataSource:
     if config.data.provider == DataProvider.CSV:
         return CSVDataSource(config)
+    # Even when using IBKR for intraday signals we rely on daily Yahoo data for ETNs
     return YahooDataSource(config)

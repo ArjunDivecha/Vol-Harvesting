@@ -1,0 +1,11 @@
+instruments:
+  long_vol: {symbol: UVXY}
+  short_vol: {symbol: SVXY}
+data:
+  provider: yfinance
+strategy:
+  name: evrp_boc_sizing
+backtest:
+  start_date: 2012-01-01
+  end_date: 2020-01-01
+  initial_equity: 100000
