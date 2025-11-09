@@ -2,10 +2,18 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pandas as pd
 import pytest
 
 from vol_edge.config import load_config
-from vol_edge.exec.ib_trader import TradeExecutor, build_contract, get_positions, get_last_price
+from vol_edge.exec.ib_trader import (
+    TradeExecutor,
+    build_contract,
+    build_index_contract,
+    get_positions,
+    get_last_price,
+    get_index_price,
+)
 
 
 def test_build_contract_defaults():
@@ -74,3 +82,27 @@ def test_get_last_price(monkeypatch):
     fake_ib = SimpleNamespace(reqTickers=lambda contract: [FakeTicker()])
     price = get_last_price(fake_ib, SimpleNamespace(symbol="UVXY", exchange="ARCA", currency="USD"))
     assert price == 12.34
+
+
+def test_get_last_price_fallback(monkeypatch):
+    class BadTicker:
+        def marketPrice(self):
+            return float("nan")
+
+        last = 0
+        close = 0
+
+    fake_ib = SimpleNamespace(reqTickers=lambda contract: [BadTicker()])
+    monkeypatch.setattr("vol_edge.exec.ib_trader.yf", SimpleNamespace(download=lambda symbol, period, progress, auto_adjust: pd.DataFrame({"Close": [15.0]})))
+    price = get_last_price(fake_ib, SimpleNamespace(symbol="UVXY", exchange="ARCA", currency="USD"))
+    assert price == 15.0
+
+
+def test_get_index_price(monkeypatch):
+    class FakeTicker:
+        def marketPrice(self):
+            return 21.5
+
+    fake_ib = SimpleNamespace(reqTickers=lambda contract: [FakeTicker()])
+    price = get_index_price(fake_ib, "VIX3M")
+    assert price == 21.5

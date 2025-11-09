@@ -55,6 +55,8 @@ class IBKRConnectionConfig(BaseModel):
     port: int = 7496
     client_id: int = 7
     connect_timeout: float = 10.0
+    vix_symbol: str = "VIX"
+    vix3m_symbol: str = "VIX3M"
 
 
 class DataConfig(BaseModel):
@@ -112,6 +114,7 @@ class ExecutionConfig(BaseModel):
     max_retries: int = Field(2, ge=0)
     flatten_on_fail: bool = False
     account_id: Optional[str] = None
+    notional_per_trade: PositiveFloat = 10_000.0
 
 
 class AppConfig(BaseModel):

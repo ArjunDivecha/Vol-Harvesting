@@ -82,6 +82,7 @@ def test_ibkr_provider_uses_defaults():
 
     assert config.data.provider is DataProvider.IBKR
     assert config.data.ibkr.host == "127.0.0.1"
+    assert config.data.ibkr.vix_symbol == "VIX"
 
 
 def test_execution_config_defaults():
@@ -103,3 +104,4 @@ def test_execution_config_defaults():
     assert exec_cfg.fallback_loc_offset_bps == 5
     assert exec_cfg.max_retries == 2
     assert exec_cfg.account_id is None
+    assert exec_cfg.notional_per_trade == 10_000

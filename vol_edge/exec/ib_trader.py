@@ -5,7 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Dict, Optional
 
-from ib_insync import Contract, IB, Order, Ticker
+from ib_insync import Contract, IB, Order
+import yfinance as yf
 
 from vol_edge.config import AppConfig, InstrumentConfig
 from vol_edge.data.ibkr.client import IBKRClient
@@ -17,6 +18,15 @@ def build_contract(instr: InstrumentConfig) -> Contract:
     contract.secType = "STK"
     contract.exchange = instr.exchange or "SMART"
     contract.currency = instr.currency
+    return contract
+
+
+def build_index_contract(symbol: str, exchange: str = "CBOE") -> Contract:
+    contract = Contract()
+    contract.symbol = symbol
+    contract.secType = "IND"
+    contract.exchange = exchange
+    contract.currency = "USD"
     return contract
 
 
@@ -60,15 +70,38 @@ class TradeExecutor:
         return _submit(ib)
 
 
+def _fallback_price(symbol: str) -> float:
+    data = yf.download(symbol, period="5d", progress=False, auto_adjust=False)
+    if data.empty:
+        raise RuntimeError(f"Unable to fetch fallback price for {symbol}")
+    return float(data["Close"].iloc[-1])
+
+
 def get_last_price(ib: IB, instrument: InstrumentConfig) -> float:
     contract = build_contract(instrument)
     tickers = ib.reqTickers(contract)
     if not tickers:
-        raise RuntimeError(f"No ticker data for {instrument.symbol}")
+        return _fallback_price(instrument.symbol)
     ticker = tickers[0]
     price = ticker.marketPrice()
     if not price or price != price or price <= 0:
-        price = ticker.last if ticker.last and ticker.last > 0 else ticker.close
-    if not price or price <= 0:
-        raise RuntimeError(f"No valid price for {instrument.symbol}")
+        alt = getattr(ticker, "last", None) or getattr(ticker, "close", None)
+        price = alt
+    if not price or price != price or price <= 0:
+        price = _fallback_price(instrument.symbol)
+    return float(price)
+
+
+def get_index_price(ib: IB, symbol: str) -> float:
+    contract = build_index_contract(symbol)
+    tickers = ib.reqTickers(contract)
+    if not tickers:
+        return _fallback_price(symbol)
+    ticker = tickers[0]
+    price = ticker.marketPrice()
+    if not price or price != price or price <= 0:
+        alt = getattr(ticker, "last", None) or getattr(ticker, "close", None)
+        price = alt
+    if not price or price != price or price <= 0:
+        price = _fallback_price(symbol)
     return float(price)

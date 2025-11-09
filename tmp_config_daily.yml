@@ -2,13 +2,10 @@ instruments:
   long_vol: {symbol: UVXY}
   short_vol: {symbol: SVXY}
 data:
-  provider: ibkr
+  provider: yfinance
 strategy:
   name: evrp_boc_sizing
 backtest:
   start_date: 2015-01-01
-  end_date: 2020-01-01
+  end_date: 2025-11-07
   initial_equity: 100000
-execution:
-  account_id: U14983106
-  notional_per_trade: 10000
